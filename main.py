@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from datetime import timedelta
 import models, schemas, auth
@@ -9,12 +9,32 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Account Selling Platform", version="1.0")
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+def get_current_admin(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = auth.jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except auth.JWTError:
+        raise credentials_exception
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if user is None:
+        raise credentials_exception
+    return user
 
 @app.get("/")
 def read_root():
@@ -49,7 +69,7 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.post("/accounts/", response_model=schemas.AccountResponse)
-def create_account(account: schemas.AccountCreate, db: Session = Depends(get_db)):
+def create_account(account: schemas.AccountCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_admin)):
     new_account = models.Account(
         platform_type=account.platform_type,
         account_details=account.account_details,
